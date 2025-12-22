@@ -55,14 +55,10 @@ export async function POST(req: NextRequest) {
             return runMockFallback('GOOGLE_API_KEY is missing');
         }
 
-        // Candidate models to try in order (Added 'latest' variants)
+        // Candidate models to try in order
         const candidateModels = [
-            'gemini-1.5-flash',
-            'gemini-1.5-flash-latest',
-            'gemini-1.5-pro',
-            'gemini-1.5-pro-latest',
-            'gemini-pro',
-            'gemini-1.0-pro'
+            'gemini-3-flash-preview',
+            'gemini-3-pro-preview',
         ];
 
         let model = null;
