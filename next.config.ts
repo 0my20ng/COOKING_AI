@@ -9,8 +9,6 @@ const nextConfig: NextConfig = {
       },
     ],
   },
-  output: 'export',
-  basePath: '/COOKING_AI',
 };
 
 export default nextConfig;
