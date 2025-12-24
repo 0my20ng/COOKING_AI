@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
         // Detailed -> gemini-2.5-pro
         // Standard fallbacks added for reliability
         const selectedModel = mode === 'detailed' ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
-        const candidateModels = [selectedModel, 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp'];
+        const candidateModels = [selectedModel, 'gemini-2.0-flash-exp'];
 
         let result = null;
         let usedModelName = '';
@@ -131,6 +131,8 @@ export async function POST(req: NextRequest) {
 
         // Step 3: [Detailed Mode Logic] - Scrape and Analyze
         if (mode === 'detailed' && flattenedResults.length > 0) {
+            const topResults = flattenedResults.slice(0, 3); // Analyze top 3
+
             const analysisPromises = topResults.map(async (res: any) => {
                 try {
                     console.log(`[Detailed Mode] Scraping: ${res.link}`);
@@ -147,20 +149,38 @@ export async function POST(req: NextRequest) {
 
                     $('script').remove();
                     $('style').remove();
-                    const bodyText = $('body').text().replace(/\s+/g, ' ').substring(0, 10000);
+                    // Reduced from 10000 to 3000 to save tokens (TPM quota)
+                    const bodyText = $('body').text().replace(/\s+/g, ' ').trim().substring(0, 3000);
 
                     const analysisPrompt = `
-                Analyze this recipe text.
+                Analyze this recipe text for ingredients.
                 User's Current Ingredients: ${ingredients.join(', ')}
-                Recipe Text: ${bodyText}
+                Recipe Text Snippet: ${bodyText}
                 Task:
-                1. Output a list of ACTUAL ingredients mentioned in the text that are MISSING from the user's list.
-                2. If the text is NOT a recipe (e.g. login page, spam), return "INVALID".
+                1. Identify ACTUAL ingredients mentioned that are NOT in the user's list.
+                2. If the text is NOT a recipe, return "INVALID".
                 Output JSON: { "valid": boolean, "actualMissingIngredients": ["ing1", "ing2"] }
               `;
 
-                    console.log(`[Detailed Mode] Requesting AI Analysis for ${res.link} using model ${usedModelName}`);
-                    const analysisRes = await geminiClient.generateContent(analysisPrompt, { modelName: usedModelName });
+                    // Detailed mode fallback sequence
+                    const analysisModels = [usedModelName, 'gemini-2.0-flash-exp'];
+
+                    let analysisRes;
+                    let lastAnalysisError;
+
+                    for (const mName of analysisModels) {
+                        try {
+                            console.log(`[Detailed Mode] Requesting AI Analysis for ${res.link} using model ${mName}`);
+                            analysisRes = await geminiClient.generateContent(analysisPrompt, { modelName: mName });
+                            break;
+                        } catch (err: any) {
+                            console.warn(`[Detailed Mode] Model ${mName} failed for analysis: ${err.message}`);
+                            lastAnalysisError = err;
+                        }
+                    }
+
+                    if (!analysisRes) throw lastAnalysisError;
+
                     const analysisText = analysisRes.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
                     const analysisJson = JSON.parse(analysisText);
 
@@ -180,7 +200,7 @@ export async function POST(req: NextRequest) {
 
             const analyzedResults = await Promise.all(analysisPromises);
             // Filter out nulls (invalid recipes)
-            flattenedResults = analyzedResults.filter(r => r !== null);
+            flattenedResults = analyzedResults.filter((r: any) => r !== null);
         }
 
         if (flattenedResults.length === 0) {

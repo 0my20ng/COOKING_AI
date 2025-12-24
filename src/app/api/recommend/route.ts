@@ -10,8 +10,7 @@ export async function POST(req: NextRequest) {
         }
 
         // Specific model for Recommendation as requested
-        // Added standard fallbacks just in case the latest versions are not available/valid
-        const modelsToTry = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash-exp'];
+        const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash-exp'];
 
         let result = null;
         let usedModelName = '';
