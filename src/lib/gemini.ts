@@ -6,11 +6,11 @@ interface GeminiConfig {
 }
 
 export const GEMINI_MODELS = [
-    'gemini-3-pro',
-    'gemini-3-flash',
-    'gemini-2.5-pro',
     'gemini-2.5-flash',
-    'gemini-2.5-flash-lite',
+    'gemini-2.5-pro',
+    'gemini-1.5-flash',
+    'gemini-1.5-pro',
+    'gemini-2.0-flash-exp',
 ];
 
 class GeminiClient {
@@ -96,14 +96,12 @@ class GeminiClient {
                 return result; // Success!
 
             } catch (error: any) {
-                console.warn(`[GeminiClient] Key ending in ...${key.slice(-4)} failed with error:`, error.message);
-                // If it's a 429, we definitely want to retry.
-                // Actually, we want to retry on most errors except maybe invalid request structure.
-                // But for safety, let's retry on everything for now as the main goal is reliability.
+                console.warn(`[GeminiClient] Key ...${key.slice(-4)} failed for model ${config.modelName}. Error: ${error.message}`);
                 lastError = error;
             }
         }
 
+        console.error(`[GeminiClient] All ${keysToTry.length} keys failed for ${config.modelName}`);
         throw lastError || new Error('All API keys failed.');
     }
 

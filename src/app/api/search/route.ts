@@ -3,15 +3,20 @@ import * as cheerio from 'cheerio';
 import axios from 'axios';
 import { geminiClient, GEMINI_MODELS } from '@/lib/gemini';
 
-// Initialize Search Keys (Not rotated for now)
-const SEARCH_API_KEY = process.env.GOOGLE_SEARCH_API_KEY;
-const SEARCH_CX = process.env.GOOGLE_SEARCH_CX;
+// Initialize Search Keys (Check for common variations)
+const SEARCH_API_KEY = process.env.GOOGLE_SEARCH_API_KEY || process.env.GOOGLE_SEARCH_API_KEY_1;
+const SEARCH_CX = process.env.GOOGLE_SEARCH_CX || process.env.GOOGLE_SEARCH_CX_1;
 
 export async function POST(req: NextRequest) {
+    console.log("--- Search API Request Start ---");
+    console.log("SEARCH_API_KEY present:", !!SEARCH_API_KEY);
+    console.log("SEARCH_CX present:", !!SEARCH_CX);
+
     try {
         const { ingredients, dish, mode } = await req.json();
 
         if (!ingredients || ingredients.length === 0) {
+            console.warn("Search API: Missing ingredients");
             return NextResponse.json({ error: 'Ingredients are required' }, { status: 400 });
         }
 
@@ -41,11 +46,14 @@ export async function POST(req: NextRequest) {
         // Select model based on mode
         // Fast (Default) -> gemini-2.5-flash
         // Detailed -> gemini-2.5-pro
+        // Standard fallbacks added for reliability
         const selectedModel = mode === 'detailed' ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
-        const candidateModels = [selectedModel];
+        const candidateModels = [selectedModel, 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp'];
 
         let result = null;
         let usedModelName = '';
+
+        console.log(`[Search API] Mode: ${mode}, Dish: ${dish}, Model: ${selectedModel}`);
 
         // Step 1: Generate Search Plan with Gemini
         for (const modelName of candidateModels) {
@@ -123,12 +131,18 @@ export async function POST(req: NextRequest) {
 
         // Step 3: [Detailed Mode Logic] - Scrape and Analyze
         if (mode === 'detailed' && flattenedResults.length > 0) {
-            const topResults = flattenedResults.slice(0, 3); // Analyze top 3
-
             const analysisPromises = topResults.map(async (res: any) => {
                 try {
-                    // Fetch page HTML
-                    const pageRes = await axios.get(res.link, { timeout: 5000 });
+                    console.log(`[Detailed Mode] Scraping: ${res.link}`);
+                    // Fetch page HTML with User-Agent to avoid blocking
+                    const pageRes = await axios.get(res.link, {
+                        timeout: 5000,
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                        }
+                    });
+
+                    console.log(`[Detailed Mode] Scrape success: ${res.link} (Status: ${pageRes.status})`);
                     const $ = cheerio.load(pageRes.data);
 
                     $('script').remove();
@@ -145,19 +159,21 @@ export async function POST(req: NextRequest) {
                 Output JSON: { "valid": boolean, "actualMissingIngredients": ["ing1", "ing2"] }
               `;
 
-                    // Use the SAME model that worked in Step 1, or just let GeminiClient retry properly.
-                    // We'll use the usedModelName.
+                    console.log(`[Detailed Mode] Requesting AI Analysis for ${res.link} using model ${usedModelName}`);
                     const analysisRes = await geminiClient.generateContent(analysisPrompt, { modelName: usedModelName });
-                    const analysisJson = JSON.parse(analysisRes.response.text().replace(/```json/g, '').replace(/```/g, '').trim());
+                    const analysisText = analysisRes.response.text().replace(/```json/g, '').replace(/```/g, '').trim();
+                    const analysisJson = JSON.parse(analysisText);
 
                     if (analysisJson.valid) {
+                        console.log(`[Detailed Mode] Analysis valid for ${res.link}. Missing: ${analysisJson.actualMissingIngredients.join(', ')}`);
                         return { ...res, missingIngredients: analysisJson.actualMissingIngredients, analyzed: true };
                     } else {
-                        return null;
+                        console.warn(`[Detailed Mode] AI marked page as INVALID (not a recipe): ${res.link}`);
+                        return null; // Still filter out if explicitly invalid
                     }
-                } catch (e) {
-                    console.error('Scraping/Analysis failed for', res.link, e);
-                    // Return original result without analysis instead of failing completely, or mark as error
+                } catch (e: any) {
+                    console.error(`[Detailed Mode] FAILED for ${res.link}. Error: ${e.message}`);
+                    // Return original result with inference as fallback so the list isn't empty
                     return { ...res, analyzed: false, analysisError: true };
                 }
             });

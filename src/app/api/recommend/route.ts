@@ -10,10 +10,13 @@ export async function POST(req: NextRequest) {
         }
 
         // Specific model for Recommendation as requested
-        const modelsToTry = ['gemini-2.5-flash'];
+        // Added standard fallbacks just in case the latest versions are not available/valid
+        const modelsToTry = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash-exp'];
 
         let result = null;
         let usedModelName = '';
+
+        console.log(`[Recommend API] Trying ingredients: ${ingredients.join(', ')}`);
 
         // Try models sequentially (Key rotation is handled inside geminiClient)
         for (const modelName of modelsToTry) {
