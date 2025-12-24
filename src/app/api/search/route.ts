@@ -1,24 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as cheerio from 'cheerio';
 import axios from 'axios';
+import { geminiClient, GEMINI_MODELS } from '@/lib/gemini';
 
-// Initialize SDK only if key is present
-const apiKey = process.env.GOOGLE_API_KEY;
-const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
+// Initialize Search Keys (Not rotated for now)
 const SEARCH_API_KEY = process.env.GOOGLE_SEARCH_API_KEY;
 const SEARCH_CX = process.env.GOOGLE_SEARCH_CX;
 
 export async function POST(req: NextRequest) {
-    // 🔍 [DEBUG 로그] API 키가 잘 들어왔는지 확인합니다. 터미널을 봐주세요.
-    console.log("==============================================");
-    console.log("🔍 API KEY DEBUGGING");
-    console.log("GOOGLE_API_KEY Loaded:", !!apiKey);
-    console.log("GOOGLE_API_KEY Length:", apiKey ? apiKey.length : 0);
-    console.log("GOOGLE_SEARCH_API_KEY Loaded:", !!SEARCH_API_KEY);
-    console.log("GOOGLE_SEARCH_CX Loaded:", !!SEARCH_CX);
-    console.log("==============================================");
-
     try {
         const { ingredients, dish, mode } = await req.json();
 
@@ -29,7 +18,6 @@ export async function POST(req: NextRequest) {
         // [Fallback Mock Logic Definition]
         const runMockFallback = (reason: string) => {
             console.warn(`Running Mock Fallback due to: ${reason}`);
-            // Create plausible items based on basic ingredients
             const mockItems = [
                 {
                     title: `[예시] ${dish || '김치찌개'} 황금레시피 (API 키 확인 필요)`,
@@ -50,26 +38,18 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ results: mockItems });
         };
 
-        // Check configuration
-        if (!apiKey || !genAI) {
-            return runMockFallback('GOOGLE_API_KEY is missing');
-        }
+        // Select model based on mode
+        // Fast (Default) -> gemini-2.5-flash
+        // Detailed -> gemini-2.5-pro
+        const selectedModel = mode === 'detailed' ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+        const candidateModels = [selectedModel];
 
-        // Candidate models to try in order
-        const candidateModels = [
-            'gemini-3-flash-preview',
-            'gemini-3-pro-preview',
-        ];
-
-        let model = null;
         let result = null;
         let usedModelName = '';
 
         // Step 1: Generate Search Plan with Gemini
-        // Try models sequentially
         for (const modelName of candidateModels) {
             try {
-                const candidate = genAI.getGenerativeModel({ model: modelName });
                 const prompt = `
           User Ingredients: ${ingredients.join(', ')}
           Target Dish: ${dish || 'Any dish matching ingredients'}
@@ -83,9 +63,8 @@ export async function POST(req: NextRequest) {
             { "query": "korean query string", "inferredMissingIngredients": ["ingredient1", "ingredient2"] }
           ]
         `;
-                result = await candidate.generateContent(prompt);
+                result = await geminiClient.generateContent(prompt, { modelName });
                 usedModelName = modelName;
-                model = candidate; // Keep the working model for the second step (analysis)
                 break; // If successful, exit loop
             } catch (e: any) {
                 console.warn(`Model ${modelName} failed:`, e.message);
@@ -94,7 +73,7 @@ export async function POST(req: NextRequest) {
         }
 
         // If Gemini completely fails, fallback to Mock
-        if (!result || !model) {
+        if (!result) {
             return runMockFallback('All Gemini models failed (404/Error). Check API Key permissions.');
         }
 
@@ -112,8 +91,6 @@ export async function POST(req: NextRequest) {
         }
 
         // Step 2: Google Search Execution
-        // If Search Key is missing, we can't search. Fallback to mock BUT we could potentially return just the AI inferred queries if we wanted.
-        // For now, full mock fallback is safer UI-wise.
         if (!SEARCH_API_KEY || !SEARCH_CX) {
             return runMockFallback('Google Search API Keys missing');
         }
@@ -146,7 +123,7 @@ export async function POST(req: NextRequest) {
 
         // Step 3: [Detailed Mode Logic] - Scrape and Analyze
         if (mode === 'detailed' && flattenedResults.length > 0) {
-            const topResults = flattenedResults.slice(0, 3);
+            const topResults = flattenedResults.slice(0, 3); // Analyze top 3
 
             const analysisPromises = topResults.map(async (res: any) => {
                 try {
@@ -168,7 +145,9 @@ export async function POST(req: NextRequest) {
                 Output JSON: { "valid": boolean, "actualMissingIngredients": ["ing1", "ing2"] }
               `;
 
-                    const analysisRes = await model!.generateContent(analysisPrompt);
+                    // Use the SAME model that worked in Step 1, or just let GeminiClient retry properly.
+                    // We'll use the usedModelName.
+                    const analysisRes = await geminiClient.generateContent(analysisPrompt, { modelName: usedModelName });
                     const analysisJson = JSON.parse(analysisRes.response.text().replace(/```json/g, '').replace(/```/g, '').trim());
 
                     if (analysisJson.valid) {
@@ -178,11 +157,13 @@ export async function POST(req: NextRequest) {
                     }
                 } catch (e) {
                     console.error('Scraping/Analysis failed for', res.link, e);
+                    // Return original result without analysis instead of failing completely, or mark as error
                     return { ...res, analyzed: false, analysisError: true };
                 }
             });
 
             const analyzedResults = await Promise.all(analysisPromises);
+            // Filter out nulls (invalid recipes)
             flattenedResults = analyzedResults.filter(r => r !== null);
         }
 
@@ -194,7 +175,6 @@ export async function POST(req: NextRequest) {
 
     } catch (error) {
         console.error('Search Logic Error:', error);
-        // Even global catch falls back to mock to keep UI alive
         return NextResponse.json({
             results: [
                 {

@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { GoogleGenerativeAI } from '@google/generative-ai';
-
-const apiKey = process.env.GOOGLE_API_KEY;
-const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
+import { geminiClient, GEMINI_MODELS } from '@/lib/gemini';
 
 export async function POST(req: NextRequest) {
     try {
@@ -12,29 +9,15 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'Ingredients are required' }, { status: 400 });
         }
 
-        if (!apiKey || !genAI) {
-            // Fallback for demo without API key
-            return NextResponse.json({
-                recommendations: [
-                    { name: '김치찌개', reason: '김치가 있어 만들기 좋습니다.', difficulty: '쉬움', time: '20분' },
-                    { name: '된장찌개', reason: '기본적인 재료로 만들 수 있습니다.', difficulty: '보통', time: '30분' },
-                    { name: '계란말이', reason: '계란이 없어도 추천해봅니다.', difficulty: '쉬움', time: '10분' }
-                ]
-            });
-        }
-
-        // Candidate models to try in order
-        const candidateModels = [
-            'gemini-3-flash-preview',
-            'gemini-3-pro-preview',
-        ];
+        // Specific model for Recommendation as requested
+        const modelsToTry = ['gemini-2.5-flash'];
 
         let result = null;
         let usedModelName = '';
 
-        for (const modelName of candidateModels) {
+        // Try models sequentially (Key rotation is handled inside geminiClient)
+        for (const modelName of modelsToTry) {
             try {
-                const model = genAI.getGenerativeModel({ model: modelName });
                 const prompt = `
           User Ingredients: ${ingredients.join(', ')}
           
@@ -52,18 +35,24 @@ export async function POST(req: NextRequest) {
             }
           ]
         `;
-
-                result = await model.generateContent(prompt);
+                result = await geminiClient.generateContent(prompt, { modelName });
                 usedModelName = modelName;
-                break;
+                break; // Success!
             } catch (e) {
-                console.warn(`Model ${modelName} failed:`, e);
+                console.warn(`Model ${modelName} failed with all keys:`, e);
                 continue;
             }
         }
 
         if (!result) {
-            throw new Error('All Gemini models failed');
+            // Fallback for demo/error
+            return NextResponse.json({
+                recommendations: [
+                    { name: '김치찌개', reason: '추천 시스템이 일시적으로 바쁩니다.', difficulty: '쉬움', time: '20분' },
+                    { name: '된장찌개', reason: '잠시 후 다시 시도해주세요.', difficulty: '보통', time: '30분' },
+                    { name: '계란말이', reason: '기본적인 메뉴를 추천합니다.', difficulty: '쉬움', time: '10분' }
+                ]
+            });
         }
         const responseText = result.response.text();
 
